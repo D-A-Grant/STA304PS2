@@ -1,0 +1,178 @@
+#PACKAGES__________________________________________________________________________________________________
+library(tidyverse)
+library(survey)
+library(brms)
+
+#SLM_______________________________________________________________________________________________________
+
+
+SLM<- select(Data, caseid, age, feelings_life, average_hours_worked, self_rated_health, self_rated_mental_health,income_family, income_respondent)
+
+SLM <- filter(SLM, !is.na(average_hours_worked))
+
+SLM <- filter(SLM, !is.na(feelings_life))
+
+SLM <- filter(SLM, !is.na(self_rated_mental_health))
+
+RHat<- mean(SLM$feelings_life)/mean(SLM$age)
+
+N<- length(Data$caseid)
+n<- length(SLM$caseid)
+
+SE_Rhat<-sqrt((1/mean(SLM$age)^2 )*
+                  (1-n/N)*(1/n)*
+                  (var(SLM$feelings_life)+Rhat^2*var(SLM$age)-
+                       2*Rhat*cov(SLM$feelings_life, SLM$age)))
+
+ CIH<-RHat+qnorm(0.975)*SE_Rhat
+ CIL<-RHat-qnorm(0.975)*SE_Rhat
+ 
+#SURVEY___________________________________________________________________________________________________
+
+fpc.srs <- rep(N,n)
+
+age.design <- svydesign(id=~SLM$caseid, data=SLM, fpc= fpc.srs)
+
+SLM.ratio<- svyratio(~SLM$feelings_life, ~SLM$age, design=age.design)
+
+ggplot(SLM,aes(x=age, y=feelings_life)) + geom_point()
+
+ATF.model<- lm(feelings_life~age, data=SLM) #for each 1 increase in age we expect a 0.0078 increase in feelings towards life
+
+#MLR_______________________________________________________________________________________________________
+
+MLR.model<- lm(feelings_life~age + average_hours_worked + self_rated_health + self_rated_mental_health + income_family, data=SLM)
+
+summary(MLR.model)
+
+adjusted.model<- lm(feelings_life~age + as.factor(self_rated_health) + as.factor(self_rated_mental_health) + as.factor(income_family), data=SLM)
+
+summary(adjusted.model)
+
+smmr<-SLM %>%
+  group_by(income_family) %>%
+    summarise(mean_feels = mean(feelings_life, na.rm = TRUE))
+    
+feel.mental<-SLM %>%
+  group_by(self_rated_mental_health) %>%
+    summarise(mean_feels = mean(feelings_life, na.rm = TRUE))
+    
+#SAMPLING_____________________________________________________________________________________________________    
+
+set.seed(1) 
+    
+SRS<-ddply(SLM,.(SLM$income_family),function(x) x[sample(nrow(x),50),]) 
+#simple random sampling 50 observations from each family income interval, SRSWOR
+
+SRS$self_rated_mental_health <- factor(SRS$self_rated_mental_health, levels = c("Excellent","Very good","Good","Fair","Poor"))
+#Reorders the levels of the self reported mental health
+
+SRS$income_family <- factor(SRS$income_family, levels = c("$125,000 and more","$100,000 to $ 124,999","$75,000 to $99,999","$50,000 to $74,999","$25,000 to $49,999","Less than $25,000"))
+#Reorders the levels on income to make data more readable
+
+ggplot(SRS,aes(x=age, y=feelings_life)) + geom_point()    
+
+ggplot(SRS,aes(x=age, y=feelings_life)) + geom_point(aes(color = self_rated_mental_health)) 
+
+sample.model<- lm(feelings_life~age + as.factor(self_rated_health) + as.factor(self_rated_mental_health) + as.factor(income_family), data=SRS)
+
+summary(sample.model)
+
+  
+RHat2<- mean(SRS$feelings_life)/mean(SRS$age)
+
+N<- length(Data$caseid)
+n2<- length(SRS$caseid)
+
+SE_Rhat2<-sqrt((1/mean(SRS$age)^2 )*
+                  (1-n2/N)*(1/n2)*
+                  (var(SRS$feelings_life)+Rhat2^2*var(SRS$age)-
+                       2*Rhat2*cov(SRS$feelings_life, SRS$age)))
+
+CIH2<-RHat2+qnorm(0.975)*SE_Rhat2
+CIL2<-RHat2-qnorm(0.975)*SE_Rhat2
+ 
+#SURVEY_DESIGN_________________________________________________________________________________________________   
+
+fpc.srs2 <- rep(N,n2)
+
+feel.design <- svydesign(id=~caseid, data=SRS, fpc= fpc.srs2)
+
+SLM.ratio<- svyratio(~SRS$feelings_life, ~SRS$age, design=feel.design)
+
+ggplot(SRS,aes(x=age, y=feelings_life)) + geom_point()
+
+glm.feel <- svyglm(feelings_life ~ age + as.factor(income_family) + as.factor(self_rated_mental_health), feel.design) 
+
+#runs a generalized linear model on our data without design and using dummy variables for both family income and self_rated_mental_health
+
+summary(glm.feel)
+
+ggplot(SRS,aes(x=age, y=feelings_life)) + geom_point(aes(color = self_rated_mental_health)) + geom_abline(intercept=7.7716202, slope = 0.0078437)
+ 
+ggplot(data=SRS, aes(x=feelings_life, y=income_family))
+
+#BRM____________________________________________________________________________________________
+
+BRM.model <- brm(formula = feelings_life ~ age, data = SRS, seed = 1)
+
+summary(BRM.model)
+
+BRM.model.income <- brm(formula = feelings_life ~ as.factor(income_family), data = SRS, seed = 1)
+
+summary(BRM.model.income)
+
+mcmc_plot(BRM.model, type = "hist")
+mcmc_plot(BRM.model.income, type = "hist")
+
+ggplot(data = SRS, mapping = aes(x=income_family, y = feelings_life)) + geom_boxplot()
+
+#LOG________________________________________________________________________________________________________
+
+View(Data)
+MF<-Data
+View(MF)
+MF$sex[MF$sex == "Female"] <- 0
+MF$sex[MF$sex == "Male"] <- 1
+SMF<-transform(MF, sex = as.numeric(sex)) # 1 is male, 0 if female, male is success
+log.test<- glm(sex ~ age + feelings_life + as.factor(income_family), data=SMF, family="binomial")
+summary(log.test)
+
+#Odds of me being male
+
+log(p/(1-p)) = 0.532437 - 0.003329(24) - -0.040614(5) - 0.470416(1)
+
+p = 0.444987
+
+#Odds of Jeff Bezos being Male based on select factors
+
+
+log(p/(1-p)) = 0.532437 - 0.003329(56) -0.040614(10) - 0.052991
+
+
+p = 0.471751
+
+#Odds of a well off newborn
+
+log(p/(1-p)) = 0.532437 - 0.003329(1) -0.040614(10) - 0.052991
+
+p = 0.517487
+
+#Plots________________________________________________________________
+
+ggplot(Data, aes(x=province)) +geom_bar(aes(y=..count..))
+
+ggplot(Data, aes(x= feelings_life)) +geom_bar(aes(y=..count..))
+
+ggplot(SRS, aes(x= feelings_life)) +geom_bar(aes(y=..count.., color= age )) + facet_grid(rows = vars(self_rated_mental_health), cols = vars(income_family))
+
+```{r echo=FALSE}
+
+ggplot(SRS,aes(x=age, y=feelings_life)) + geom_point(aes(color = self_rated_mental_health)) + geom_abline(intercept=7.7716202, slope = 0.0078437)
+
+```
+
+
+
+
+
